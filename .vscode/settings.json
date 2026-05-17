@@ -1,0 +1,15 @@
+{
+    "cmake.cmakePath": "cmake",
+    "cmake.environment": {},
+    "cmake.useCMakePresets": "always",
+    "cmake.preferredGenerators": [
+        "Ninja"
+    ],
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}/build/Debug",
+        "--query-driver=arm-none-eabi-*.exe"
+    ],
+    "cortex-debug.gdbPath.windows": "arm-none-eabi-gdb",
+    "cortex-debug.gdbPath": "arm-none-eabi-gdb"
+}
+
