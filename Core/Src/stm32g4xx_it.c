@@ -62,6 +62,8 @@ extern ADC_HandleTypeDef hadc2;
 extern DMA_HandleTypeDef hdma_usart2_tx;
 extern DMA_HandleTypeDef hdma_usart2_rx;
 extern UART_HandleTypeDef huart2;
+extern TIM_HandleTypeDef htim20;
+
 /* USER CODE BEGIN EV */
 
 /* USER CODE END EV */
@@ -191,7 +193,7 @@ void SysTick_Handler(void)
   /* USER CODE BEGIN SysTick_IRQn 0 */
 
   /* USER CODE END SysTick_IRQn 0 */
-  HAL_IncTick();
+
   /* USER CODE BEGIN SysTick_IRQn 1 */
 
   /* USER CODE END SysTick_IRQn 1 */
@@ -287,6 +289,20 @@ void USART2_IRQHandler(void)
   /* USER CODE BEGIN USART2_IRQn 1 */
 
   /* USER CODE END USART2_IRQn 1 */
+}
+
+/**
+  * @brief This function handles TIM20 update interrupt.
+  */
+void TIM20_UP_IRQHandler(void)
+{
+  /* USER CODE BEGIN TIM20_UP_IRQn 0 */
+
+  /* USER CODE END TIM20_UP_IRQn 0 */
+  HAL_TIM_IRQHandler(&htim20);
+  /* USER CODE BEGIN TIM20_UP_IRQn 1 */
+
+  /* USER CODE END TIM20_UP_IRQn 1 */
 }
 
 /* USER CODE BEGIN 1 */

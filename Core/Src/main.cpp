@@ -29,6 +29,7 @@
 /* USER CODE BEGIN Includes */
 #include <math.h>
 #include <string.h>
+#include "FirstOrderFilter.hpp"
 
 /* USER CODE END Includes */
 
@@ -38,12 +39,18 @@ typedef struct
 {
   ADC_HandleTypeDef *hadc;
 
-  float empty_adc;
-  float weight_kg;
-  float weight_adc;
-  float val_adc;
-  float force_kg;
+  float empty_adc;      // 没有压力时的 ADC 值
+  float weight_kg;      // 用于标定的砝码重量，单位：千克
+  float weight_adc;     // 用于标定的砝码对应的 ADC 值
+  float raw_adc;        // 原始 ADC 值
+  float filtered_adc;   // 滤波后的 ADC 值
+  float raw_force_kg;   // 根据原始 ADC 值计算的力，单位：千克
+  float filtered_force_kg;// 根据滤波后 ADC 值计算的力，单位：千克
+  float force_kg;   
 } ForceSensor_t;
+
+FirstOrderFilter filter_L;
+FirstOrderFilter filter_R;
 
 /* USER CODE END PTD */
 
@@ -66,16 +73,22 @@ static ForceSensor_t force_sensor_L = {
   .empty_adc = 32767.0f,
   .weight_kg = 100.0f,
   .weight_adc = 65535.0f,
-  .val_adc = 0.0f,
+  .raw_adc = 0.0f,
+  .filtered_adc = 0.0f,
+  .raw_force_kg = 0.0f,
+  .filtered_force_kg = 0.0f,
   .force_kg = 0.0f
 };
 
 static ForceSensor_t force_sensor_R = {
   .hadc = &hadc1,
-  .empty_adc = 32760.0f,
-  .weight_kg = 10.0f,
-  .weight_adc = 40000.0f,
-  .val_adc = 0.0f,
+  .empty_adc = 32767.0f,
+  .weight_kg = 100.0f,
+  .weight_adc = 65535.0f,
+  .raw_adc = 0.0f,
+  .filtered_adc = 0.0f,
+  .raw_force_kg = 0.0f,
+  .filtered_force_kg = 0.0f,
   .force_kg = 0.0f
 };
 
@@ -87,6 +100,7 @@ static volatile uint32_t adc2_sample_count = 0;
 static uint8_t force_tx_packet[8];
 
 static volatile uint8_t force_uart_tx_ready = 1;
+static float force_filter_tau_s = 0.003f;
 
 /* USER CODE END PV */
 
@@ -95,8 +109,10 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 void ForceSensor_Init(void);
 uint8_t ForceSensor_UpdateIfNewSamples(void);
-float ForceSensor_AdcToKg(const ForceSensor_t *sensor);
+float ForceSensor_AdcToKg(const ForceSensor_t *sensor, float adc);
 void ForceSensor_SendPacket(void);
+uint32_t ForceSensor_KgToDecigram(float force_kg);
+void ForceSensor_PackU24(uint8_t *data, uint32_t value);
 
 /* USER CODE END PFP */
 
@@ -104,6 +120,9 @@ void ForceSensor_SendPacket(void);
 /* USER CODE BEGIN 0 */
 void ForceSensor_Init(void)
 {
+  filter_R.Init(0.00005f, force_filter_tau_s);
+  filter_L.Init(0.00005f, force_filter_tau_s);
+
   HAL_ADC_Start_DMA(force_sensor_R.hadc, (uint32_t *)&adc1_dma_latest, 1);
   HAL_ADC_Start_DMA(force_sensor_L.hadc, (uint32_t *)&adc2_dma_latest, 1);
 
@@ -127,16 +146,25 @@ uint8_t ForceSensor_UpdateIfNewSamples(void)
   last_adc1_sample_count = now_adc1_sample_count;
   last_adc2_sample_count = now_adc2_sample_count;
 
-  force_sensor_R.val_adc = (float)adc1_dma_latest;
-  force_sensor_L.val_adc = (float)adc2_dma_latest;
+  force_sensor_R.raw_adc = (float)adc1_dma_latest;
+  force_sensor_L.raw_adc = (float)adc2_dma_latest;
 
-  force_sensor_R.force_kg = ForceSensor_AdcToKg(&force_sensor_R);
-  force_sensor_L.force_kg = ForceSensor_AdcToKg(&force_sensor_L);
+  force_sensor_R.filtered_adc = filter_R.Update(force_sensor_R.raw_adc);
+  force_sensor_L.filtered_adc = filter_L.Update(force_sensor_L.raw_adc);
+
+  force_sensor_R.raw_force_kg = ForceSensor_AdcToKg(&force_sensor_R, force_sensor_R.raw_adc);
+  force_sensor_L.raw_force_kg = ForceSensor_AdcToKg(&force_sensor_L, force_sensor_L.raw_adc);
+
+  force_sensor_R.filtered_force_kg = ForceSensor_AdcToKg(&force_sensor_R, force_sensor_R.filtered_adc);
+  force_sensor_L.filtered_force_kg = ForceSensor_AdcToKg(&force_sensor_L, force_sensor_L.filtered_adc);
+
+  force_sensor_R.force_kg = force_sensor_R.filtered_force_kg;
+  force_sensor_L.force_kg = force_sensor_L.filtered_force_kg;
 
   return 1;
 }
 
-float ForceSensor_AdcToKg(const ForceSensor_t *sensor)
+float ForceSensor_AdcToKg(const ForceSensor_t *sensor, float adc)
 {
   const float span_adc = sensor->weight_adc - sensor->empty_adc;
   float force_kg;
@@ -146,17 +174,17 @@ float ForceSensor_AdcToKg(const ForceSensor_t *sensor)
     return 0.0f;
   }
 
-  force_kg = (sensor->val_adc - sensor->empty_adc)
+  force_kg = (adc - sensor->empty_adc)
              * sensor->weight_kg / span_adc;
 
-  if (force_kg < 0.0f)
-  {
-    force_kg = 0.0f;
-  }
-  else if (force_kg > 100.0f)
-  {
-    force_kg = 100.0f;
-  }
+  // if (force_kg < 0.0f)
+  // {
+  //   force_kg = 0.0f;
+  // }
+  // else if (force_kg > 100.0f)
+  // {
+  //   force_kg = 100.0f;
+  // }
 
   return force_kg;
 }
@@ -168,14 +196,37 @@ void ForceSensor_SendPacket(void)
     return;
   }
 
-  memcpy(&force_tx_packet[0], &force_sensor_L.force_kg, sizeof(force_sensor_L.force_kg));
-  memcpy(&force_tx_packet[4], &force_sensor_R.force_kg, sizeof(force_sensor_R.force_kg));
+  force_tx_packet[0] = 'L';
+  ForceSensor_PackU24(&force_tx_packet[1], ForceSensor_KgToDecigram(force_sensor_L.force_kg));
+  force_tx_packet[4] = 'R';
+  ForceSensor_PackU24(&force_tx_packet[5], ForceSensor_KgToDecigram(force_sensor_R.force_kg));
 
   force_uart_tx_ready = 0;
   if (HAL_UART_Transmit_DMA(&huart2, force_tx_packet, 8) != HAL_OK)
   {
     force_uart_tx_ready = 1;
   }
+}
+
+uint32_t ForceSensor_KgToDecigram(float force_kg)
+{
+  if (force_kg < 0.0f)
+  {
+    force_kg = 0.0f;
+  }
+  else if (force_kg > 100.0f)
+  {
+    force_kg = 100.0f;
+  }
+
+  return (uint32_t)(force_kg * 10000.0f + 0.5f);
+}
+
+void ForceSensor_PackU24(uint8_t *data, uint32_t value)
+{
+  data[0] = (uint8_t)(value & 0xFF);
+  data[1] = (uint8_t)((value >> 8) & 0xFF);
+  data[2] = (uint8_t)((value >> 16) & 0xFF);
 }
 
 /* USER CODE END 0 */
@@ -235,6 +286,7 @@ int main(void)
       ForceSensor_SendPacket();
     }
   }
+  HAL_Delay(1);
   /* USER CODE END 3 */
 }
 
@@ -284,7 +336,7 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+extern "C" void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
   if (hadc->Instance == ADC1)
   {
@@ -296,7 +348,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
   }
 }
 
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+extern "C" void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART2)
   {
@@ -305,6 +357,28 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 }
 
 /* USER CODE END 4 */
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM20 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+extern "C" void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM20)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
