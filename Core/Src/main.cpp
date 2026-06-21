@@ -56,6 +56,38 @@ FirstOrderFilter filter_R;
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+// Select exactly one calibration mode here.
+#define FORCE_SENSOR_CALIB_USE_KB //! 使用拟合后的kb参数进行标定
+// #define FORCE_SENSOR_CALIB_USE_3POINT //! 使用三个标定点进行线性插值标定
+
+// !Mode 1: force_kg = k * adc + b.
+#define FORCE_SENSOR_L_LINEAR_K 0.0037902456f
+#define FORCE_SENSOR_L_LINEAR_B -124.4756404968f
+#define FORCE_SENSOR_R_LINEAR_K 0.0043918528f
+#define FORCE_SENSOR_R_LINEAR_B -144.3149817305f
+
+// !Mode 2: three calibration points. ADC values must be monotonic.
+#define FORCE_SENSOR_L_CALIB_FORCE_KG_0 0.0f
+#define FORCE_SENSOR_L_CALIB_ADC_0      32767.0f
+#define FORCE_SENSOR_L_CALIB_FORCE_KG_1 50.0f
+#define FORCE_SENSOR_L_CALIB_ADC_1      49151.0f
+#define FORCE_SENSOR_L_CALIB_FORCE_KG_2 100.0f
+#define FORCE_SENSOR_L_CALIB_ADC_2      65535.0f
+
+#define FORCE_SENSOR_R_CALIB_FORCE_KG_0 0.0f
+#define FORCE_SENSOR_R_CALIB_ADC_0      32767.0f
+#define FORCE_SENSOR_R_CALIB_FORCE_KG_1 50.0f
+#define FORCE_SENSOR_R_CALIB_ADC_1      49151.0f
+#define FORCE_SENSOR_R_CALIB_FORCE_KG_2 100.0f
+#define FORCE_SENSOR_R_CALIB_ADC_2      65535.0f
+
+#if defined(FORCE_SENSOR_CALIB_USE_KB) && defined(FORCE_SENSOR_CALIB_USE_3POINT)
+#error "Select only one force sensor calibration mode"
+#endif
+
+#if !defined(FORCE_SENSOR_CALIB_USE_KB) && !defined(FORCE_SENSOR_CALIB_USE_3POINT)
+#error "Select one force sensor calibration mode"
+#endif
 
 /* USER CODE END PD */
 
@@ -70,9 +102,6 @@ FirstOrderFilter filter_R;
 //TODO: 手动砝码标定
 static ForceSensor_t force_sensor_L = {
   .hadc = &hadc2,
-  .empty_adc = 32767.0f,
-  .weight_kg = 100.0f,
-  .weight_adc = 65535.0f,
   .raw_adc = 0.0f,
   .filtered_adc = 0.0f,
   .raw_force_kg = 0.0f,
@@ -82,9 +111,6 @@ static ForceSensor_t force_sensor_L = {
 
 static ForceSensor_t force_sensor_R = {
   .hadc = &hadc1,
-  .empty_adc = 32767.0f,
-  .weight_kg = 100.0f,
-  .weight_adc = 65535.0f,
   .raw_adc = 0.0f,
   .filtered_adc = 0.0f,
   .raw_force_kg = 0.0f,
@@ -110,6 +136,10 @@ void SystemClock_Config(void);
 void ForceSensor_Init(void);
 uint8_t ForceSensor_UpdateIfNewSamples(void);
 float ForceSensor_AdcToKg(const ForceSensor_t *sensor, float adc);
+float ForceSensor_Interpolate3Point(float adc,
+                                    float force_kg_0, float adc_0,
+                                    float force_kg_1, float adc_1,
+                                    float force_kg_2, float adc_2);
 void ForceSensor_SendPacket(void);
 uint32_t ForceSensor_KgToDecigram(float force_kg);
 void ForceSensor_PackU24(uint8_t *data, uint32_t value);
@@ -166,27 +196,73 @@ uint8_t ForceSensor_UpdateIfNewSamples(void)
 
 float ForceSensor_AdcToKg(const ForceSensor_t *sensor, float adc)
 {
-  const float span_adc = sensor->weight_adc - sensor->empty_adc;
-  float force_kg;
-
-  if ((fabsf(span_adc) < 1.0f) || (sensor->weight_kg <= 0.0f))
+  if (sensor == &force_sensor_L)
   {
-    return 0.0f;
+#ifdef FORCE_SENSOR_CALIB_USE_KB
+    return FORCE_SENSOR_L_LINEAR_K * adc + FORCE_SENSOR_L_LINEAR_B;
+#elif defined(FORCE_SENSOR_CALIB_USE_3POINT)
+    return ForceSensor_Interpolate3Point(adc,
+                                         FORCE_SENSOR_L_CALIB_FORCE_KG_0,
+                                         FORCE_SENSOR_L_CALIB_ADC_0,
+                                         FORCE_SENSOR_L_CALIB_FORCE_KG_1,
+                                         FORCE_SENSOR_L_CALIB_ADC_1,
+                                         FORCE_SENSOR_L_CALIB_FORCE_KG_2,
+                                         FORCE_SENSOR_L_CALIB_ADC_2);
+#endif
   }
 
-  force_kg = (adc - sensor->empty_adc)
-             * sensor->weight_kg / span_adc;
+  if (sensor == &force_sensor_R)
+  {
+#ifdef FORCE_SENSOR_CALIB_USE_KB
+    return FORCE_SENSOR_R_LINEAR_K * adc + FORCE_SENSOR_R_LINEAR_B;
+#elif defined(FORCE_SENSOR_CALIB_USE_3POINT)
+    return ForceSensor_Interpolate3Point(adc,
+                                         FORCE_SENSOR_R_CALIB_FORCE_KG_0,
+                                         FORCE_SENSOR_R_CALIB_ADC_0,
+                                         FORCE_SENSOR_R_CALIB_FORCE_KG_1,
+                                         FORCE_SENSOR_R_CALIB_ADC_1,
+                                         FORCE_SENSOR_R_CALIB_FORCE_KG_2,
+                                         FORCE_SENSOR_R_CALIB_ADC_2);
+#endif
+  }
 
-  // if (force_kg < 0.0f)
-  // {
-  //   force_kg = 0.0f;
-  // }
-  // else if (force_kg > 100.0f)
-  // {
-  //   force_kg = 100.0f;
-  // }
+  return 0.0f;
+}
 
-  return force_kg;
+float ForceSensor_Interpolate3Point(float adc,
+                                    float force_kg_0, float adc_0,
+                                    float force_kg_1, float adc_1,
+                                    float force_kg_2, float adc_2)
+{
+  float adc_a = adc_0;
+  float adc_b = adc_1;
+  float force_kg_a = force_kg_0;
+  float force_kg_b = force_kg_1;
+  float span_adc;
+
+  if (((adc_0 <= adc_1) && (adc <= adc_1)) ||
+      ((adc_0 > adc_1) && (adc >= adc_1)))
+  {
+    adc_a = adc_0;
+    adc_b = adc_1;
+    force_kg_a = force_kg_0;
+    force_kg_b = force_kg_1;
+  }
+  else
+  {
+    adc_a = adc_1;
+    adc_b = adc_2;
+    force_kg_a = force_kg_1;
+    force_kg_b = force_kg_2;
+  }
+
+  span_adc = adc_b - adc_a;
+  if (fabsf(span_adc) < 1.0f)
+  {
+    return force_kg_a;
+  }
+
+  return force_kg_a + (adc - adc_a) * (force_kg_b - force_kg_a) / span_adc;
 }
 
 void ForceSensor_SendPacket(void)
