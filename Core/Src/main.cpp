@@ -61,10 +61,15 @@ FirstOrderFilter filter_R;
 // #define FORCE_SENSOR_CALIB_USE_3POINT //! 使用三个标定点进行线性插值标定
 
 // !Mode 1: force_kg = k * adc + b.
-#define FORCE_SENSOR_L_LINEAR_K 0.0037902456f
-#define FORCE_SENSOR_L_LINEAR_B -124.4756404968f
-#define FORCE_SENSOR_R_LINEAR_K 0.0043918528f
-#define FORCE_SENSOR_R_LINEAR_B -144.3149817305f
+#define FORCE_SENSOR_L_LINEAR_K 0.0011627355f
+#define FORCE_SENSOR_L_LINEAR_B -38.1154445135f
+#define FORCE_SENSOR_R_LINEAR_K 0.0010657706f
+#define FORCE_SENSOR_R_LINEAR_B -34.8930652317f
+
+// 标定时重力方向与传感器正向成 45°，传感器测到的是实际张力的投影：
+// F_projected = F_actual * cos(45°)。因此 ADC 标定结果需除以 cos(45°)
+// 才能恢复实际张力；1 / cos(45°) = sqrt(2) ≈ 1.41421356。
+#define FORCE_SENSOR_CALIBRATION_COS_45 0.7071067812f
 
 // !Mode 2: three calibration points. ADC values must be monotonic.
 #define FORCE_SENSOR_L_CALIB_FORCE_KG_0 0.0f
@@ -136,6 +141,7 @@ void SystemClock_Config(void);
 void ForceSensor_Init(void);
 uint8_t ForceSensor_UpdateIfNewSamples(void);
 float ForceSensor_AdcToKg(const ForceSensor_t *sensor, float adc);
+float ForceSensor_Compensate45Deg(float projected_force_kg);
 float ForceSensor_Interpolate3Point(float adc,
                                     float force_kg_0, float adc_0,
                                     float force_kg_1, float adc_1,
@@ -148,6 +154,12 @@ void ForceSensor_PackU24(uint8_t *data, uint32_t value);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+float ForceSensor_Compensate45Deg(float projected_force_kg)
+{
+  // 将 45° 方向上的传感器分力还原为完整张力，输出仍为 kg 等效值。
+  return projected_force_kg / FORCE_SENSOR_CALIBRATION_COS_45;
+}
+
 void ForceSensor_Init(void)
 {
   filter_R.Init(0.00005f, force_filter_tau_s);
@@ -182,11 +194,15 @@ uint8_t ForceSensor_UpdateIfNewSamples(void)
   force_sensor_R.filtered_adc = filter_R.Update(force_sensor_R.raw_adc);
   force_sensor_L.filtered_adc = filter_L.Update(force_sensor_L.raw_adc);
 
-  force_sensor_R.raw_force_kg = ForceSensor_AdcToKg(&force_sensor_R, force_sensor_R.raw_adc);
-  force_sensor_L.raw_force_kg = ForceSensor_AdcToKg(&force_sensor_L, force_sensor_L.raw_adc);
+  force_sensor_R.raw_force_kg = ForceSensor_Compensate45Deg(
+      ForceSensor_AdcToKg(&force_sensor_R, force_sensor_R.raw_adc));
+  force_sensor_L.raw_force_kg = ForceSensor_Compensate45Deg(
+      ForceSensor_AdcToKg(&force_sensor_L, force_sensor_L.raw_adc));
 
-  force_sensor_R.filtered_force_kg = ForceSensor_AdcToKg(&force_sensor_R, force_sensor_R.filtered_adc);
-  force_sensor_L.filtered_force_kg = ForceSensor_AdcToKg(&force_sensor_L, force_sensor_L.filtered_adc);
+  force_sensor_R.filtered_force_kg = ForceSensor_Compensate45Deg(
+      ForceSensor_AdcToKg(&force_sensor_R, force_sensor_R.filtered_adc));
+  force_sensor_L.filtered_force_kg = ForceSensor_Compensate45Deg(
+      ForceSensor_AdcToKg(&force_sensor_L, force_sensor_L.filtered_adc));
 
   force_sensor_R.force_kg = force_sensor_R.filtered_force_kg;
   force_sensor_L.force_kg = force_sensor_L.filtered_force_kg;

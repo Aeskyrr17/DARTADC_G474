@@ -27,7 +27,7 @@ def calculate_average_from_txt(filename):
     return average
 
 
-filename = "D:\\01_Workspace\\RM\\DartADC_G474\\DataRecord\\osc00013.txt"
+filename = "C:\\01_Workspace\\RM\\dart\\DartADC_G474\\DataRecord\\osc00026.txt"
 
 avg = calculate_average_from_txt(filename)
 
